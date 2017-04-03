@@ -51,3 +51,27 @@ table caption {
 	text-align: left;
 	background-color: #eee;
 }
+
+/* --- Color styles for project status, mimics Foundation default label styles --- */
+
+.pending {
+	background-color: #767676;
+}
+
+.reception_control {
+	background-color: #1779ba;
+}
+
+.ongoing {
+	background-color: #3adb76;
+	color: black;
+}
+
+.closed {
+	background-color: #ffae00;
+	color: black;
+}
+
+.aborted {
+	background-color: #cc4b37;
+}

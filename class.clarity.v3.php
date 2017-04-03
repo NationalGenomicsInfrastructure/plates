@@ -18,6 +18,8 @@ class Clarity {
 
 		$curl=curl_init();
 		curl_setopt($curl,CURLOPT_URL,$uri);
+		curl_setopt($curl,CURLOPT_CONNECTTIMEOUT,5);
+		curl_setopt($curl,CURLOPT_TIMEOUT,120);
 		curl_setopt($curl,CURLOPT_RETURNTRANSFER,true);
 		curl_setopt($curl,CURLOPT_HTTPHEADER,$header);
 		$data=curl_exec($curl);
@@ -36,22 +38,30 @@ class Clarity {
 		return $results;
 	}
 
+	public function testConnection() {
+		return $this->getXML('');
+	}
+
 	public function getEntity($endpoint) {
 		$xmldata=$this->getXML($endpoint);
-		$results=$this->getElements($xmldata);
-		
-		if(is_array($results)) {
-			/*
-			If item is not found this is returned:
-			SimpleXMLElement Object
-			(
-			    [message] => Project not found: P7699
-			)			
-			*/
-			if(isset($results['message'])) {
-				return FALSE;
+		if($xmldata) {
+			$results=$this->getElements($xmldata);
+			
+			if(is_array($results)) {
+				/*
+				If item is not found this is returned:
+				SimpleXMLElement Object
+				(
+				    [message] => Project not found: P7699
+				)			
+				*/
+				if(isset($results['message'])) {
+					return FALSE;
+				} else {
+					return $results;
+				}
 			} else {
-				return $results;
+				return FALSE;
 			}
 		} else {
 			return FALSE;

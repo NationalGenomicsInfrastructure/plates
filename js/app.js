@@ -1,8 +1,31 @@
 $(document).foundation();
 
+// Any code tag with the class name "plate" can be clicked to add plate data to plate input field
+$.fn.plateClick = function() {
+    return this.each(function() {
+		$(this).on("click", function() {
+			var VAL = $(this).text();
+			$("#plate").val(VAL).trigger("keyup");
+		});
+    });
+};
+
 $(document).ready(function() {
-	// Automatically focus on first input field in all forms
-	$('form').find('*').filter(':input:visible:first').focus();
+	// Update server status flags (using Foundation class names success|alert)
+	$.ajax({
+		url: '_status.php', 
+		dataType: 'json', 
+		success: function(json) {
+			$.each(json,function(key,status) {
+				$("#" + key).fadeOut('fast', function() {
+					$(this).addClass(status).fadeIn('slow');
+				});
+			});
+		}
+	});
+	
+	// Automatically focus on first empty input field in all forms
+	$('form').find('*').filter(":input[value='']:visible:first").focus();
 	
 	$("#user_email").on("paste, keyup", function() {
 		var VAL = this.value;
@@ -18,11 +41,7 @@ $(document).ready(function() {
 		$("#position").val(VAL).trigger("keyup");
 	});
 
-	// Any code tag with the class name "plate" can be clicked to add plate data to plate input field
-	$("code.plate").on("click", function() {
-		var VAL = $(this).text();
-		$("#plate").val(VAL).trigger("keyup");
-	});
+	$("code.plate").plateClick();
 
 	// Automatically trigger visualization of storage units and racks depending on what's entered in position input field
 	$("#position").on("paste, keyup", function() {
@@ -40,7 +59,7 @@ $(document).ready(function() {
 			});
 		
 			request.done(function(msg) {
-				$("#rackview").html(msg);
+				$("#query_data").html(msg);
 				$("table.rack td").not(".full").click(function() {
 					$("table.rack td").removeClass("selected");
 					$(this).addClass("selected");
@@ -49,7 +68,27 @@ $(document).ready(function() {
 				});
 			});
 		} else {
-			$("#rackview").html("");
+			$("#query_data").html("");
+		}
+	});
+
+	$("#plate").on("paste, keyup", function() {
+		var VAL = this.value;
+		
+		if(VAL.length>3) {
+			var request=$.ajax({
+				url: "_platesearch.php", 
+				method: "POST", 
+				data: { query : VAL }, 
+				dataType: "html"
+			});
+		
+			request.done(function(msg) {
+				$("#query_data").html(msg);
+				$("code.plate").plateClick();
+			});
+		} else {
+			$("#query_data").html("");
 		}
 	});
 });

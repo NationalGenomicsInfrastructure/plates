@@ -2,26 +2,62 @@
 require 'global.php';
 
 $ALERTS=array();
-$project=FALSE;
-$search=FALSE;
-$projecthtml="";
-$platehtml="";
-$rackhtml="";
 
-if(isset($_POST['user_email']) && $user=checkUser($_POST['user_email'])) {
-	if($plate=validatePlate($_POST['plate'])) {
-		if(isset($_POST['submit'])) {
-			$plate_data=sql_fetch("SELECT * FROM plates WHERE plate_id='".$plate['name']."' LIMIT 1");
-			if($plate_data) {
-				// Plate is already in DB
-				// Check status
-				if($plate_data['status']=="checked_in") {
-					// Plate is checked in
-					// Scan plate to verify check out
+if(isset($_POST['user_email'])) {
+	if($user=checkUser($_POST['user_email'])) {
+		if($plate=parseQuery($_POST['plate'])) {
+			if(isset($_POST['submit'])) {
+				$plate_data=sql_fetch("SELECT * FROM plates WHERE plate_id='".$plate['name']."' LIMIT 1");
+				if($plate_data) {
+					// Plate is already in DB
+					// Check status
+					if($plate_data['status']=="checked_in") {
+						// Plate is checked in
+						// Scan plate to verify check out
+						if(isset($_POST['plate_verify'])) {
+							if($plate['name']==$_POST['plate_verify']) {
+								if(plateCheckOut($plate_data,$user['user_email'])) {
+									$ALERTS[]=setAlerts("Plate checked out","success");
+									$plate=FALSE;
+								} else {
+									$ALERTS[]=setAlerts("Could not check out plate!");
+								}
+							} else {
+								$ALERTS[]=setAlerts("Plate name does not match!");
+							}
+						}
+					} elseif($plate_data['status']=="checked_out") {
+						// Plate is checked out
+						// Show previous position!
+						if(isset($_POST['position'])) {
+							if(plateCheckIn($plate_data,$_POST['position'],$user['user_email'])) {
+								$ALERTS[]=setAlerts("Plate was checked in successfully","success");
+								$plate=FALSE;
+							} else {
+								$ALERTS[]=setAlerts("Could not check in plate!");
+							}
+						}
+					}
+				} else {
+					// Plate is not in database
+					// If position is set, proceed with adding plate
+					if(isset($_POST['position'])) {
+						// Check in new plate (add)
+						if(plateAdd($plate['name'],$_POST['position'],$user['user_email'])) {
+							$ALERTS[]=setAlerts("Plate was added successfully","success");
+							$plate=FALSE;
+						} else {
+							$ALERTS[]=setAlerts("Could not add plate!");
+						}
+					}
+				}
+			} elseif(isset($_POST['return'])) {
+				$plate_data=sql_fetch("SELECT * FROM plates WHERE plate_id='".$plate['name']."' LIMIT 1");
+				if($plate_data) {
 					if(isset($_POST['plate_verify'])) {
 						if($plate['name']==$_POST['plate_verify']) {
-							if(plateCheckOut($plate_data,$user['user_email'])) {
-								$ALERTS[]=setAlerts("Plate checked out","success");
+							if(plateCheckOut($plate_data,$user['user_email'],'return')) {
+								$ALERTS[]=setAlerts("Plate checked out for returning to user, this means a plate with the same name can not be checked in again","warning");
 								$plate=FALSE;
 							} else {
 								$ALERTS[]=setAlerts("Could not check out plate!");
@@ -30,83 +66,33 @@ if(isset($_POST['user_email']) && $user=checkUser($_POST['user_email'])) {
 							$ALERTS[]=setAlerts("Plate name does not match!");
 						}
 					}
-				} elseif($plate_data['status']=="checked_out") {
-					// Plate is checked out
-					// Show previous position!
-					if(isset($_POST['position'])) {
-						if(plateCheckIn($plate_data,$_POST['position'],$user['user_email'])) {
-							$ALERTS[]=setAlerts("Plate was checked in successfully","success");
-							$plate=FALSE;
+				}
+			} elseif(isset($_POST['destroy'])) {
+				$plate_data=sql_fetch("SELECT * FROM plates WHERE plate_id='".$plate['name']."' LIMIT 1");
+				if($plate_data) {
+					if(isset($_POST['plate_verify'])) {
+						if($plate['name']==$_POST['plate_verify']) {
+							if(plateCheckOut($plate_data,$user['user_email'],'destroy')) {
+								$ALERTS[]=setAlerts("Plate checked out for destruction, this means a plate with the same name can not be checked in again","warning");
+								$plate=FALSE;
+							} else {
+								$ALERTS[]=setAlerts("Could not check out plate!");
+							}
 						} else {
-							$ALERTS[]=setAlerts("Could not check in plate!");
+							$ALERTS[]=setAlerts("Plate name does not match!");
 						}
 					}
 				}
-				
-				// more statuses? destroyed/returned?
-				
-			} else {
-				// Plate is not in database
-
-				// Check if query matches PNNNN format or J.Doe_17_01 project name format - in this case we want to search for plates
-				if(preg_match("/^P[0-9]{3,}$/",$plate['name'])) {
-					// Query match LIMS project ID - fetch project info
-					if($project=getProject($plate['name'])) {
-						$search=TRUE;
-					}
-					$plate=FALSE;
-				} elseif(preg_match("/^[A-Z]+\.[A-Za-z]{2,}_?([0-9]{2})?_?([0-9]{2})?/",$plate['name'])) {
-					$search=findProjectByName($plate['name']);
-					$plate=FALSE;
-				}
-				
-				// Check in
-				if(isset($_POST['position'])) {
-					if(plateAdd($plate['name'],$_POST['position'],$user['user_email'])) {
-						$ALERTS[]=setAlerts("Plate was added successfully","success");
-						$plate=FALSE;
-					} else {
-						$ALERTS[]=setAlerts("Could not add plate!");
-					}
-				}
+			} elseif(isset($_POST['cancel'])) {
+				$plate=FALSE;
 			}
-		} elseif(isset($_POST['return'])) {
-			$plate_data=sql_fetch("SELECT * FROM plates WHERE plate_id='".$plate['name']."' LIMIT 1");
-			if($plate_data) {
-				if(isset($_POST['plate_verify'])) {
-					if($plate['name']==$_POST['plate_verify']) {
-						if(plateCheckOut($plate_data,$user['user_email'],'return')) {
-							$ALERTS[]=setAlerts("Plate checked out for returning to user, this means a plate with the same name can not be checked in again","warning");
-							$plate=FALSE;
-						} else {
-							$ALERTS[]=setAlerts("Could not check out plate!");
-						}
-					} else {
-						$ALERTS[]=setAlerts("Plate name does not match!");
-					}
-				}
-			}
-		} elseif(isset($_POST['destroy'])) {
-			$plate_data=sql_fetch("SELECT * FROM plates WHERE plate_id='".$plate['name']."' LIMIT 1");
-			if($plate_data) {
-				if(isset($_POST['plate_verify'])) {
-					if($plate['name']==$_POST['plate_verify']) {
-						if(plateCheckOut($plate_data,$user['user_email'],'destroy')) {
-							$ALERTS[]=setAlerts("Plate checked out for destruction, this means a plate with the same name can not be checked in again","warning");
-							$plate=FALSE;
-						} else {
-							$ALERTS[]=setAlerts("Could not check out plate!");
-						}
-					} else {
-						$ALERTS[]=setAlerts("Plate name does not match!");
-					}
-				}
-			}
-		} elseif(isset($_POST['cancel'])) {
+		} else {
 			$plate=FALSE;
+			$ALERTS[]=setAlerts("Invalid query: ".$_POST['plate']);
 		}
 	} else {
 		$plate=FALSE;
+		$ALERTS[]=setAlerts("Invalid user name");
 	}
 } else {
 	$plate=FALSE;
@@ -123,17 +109,22 @@ if($checkedout->num_rows>0) {
 	while($checkedout_plate=$checkedout->fetch_assoc()) {
 		$lastlog=getLastLog($checkedout_plate['log']);
 		$checkedouttime=date('Y-m-d H:i:s', $lastlog['timestamp']);
-		$diff=round((time()-$lastlog['timestamp'])/3600);
-		if($diff>12) {
-			$checkedouton=date('Y-m-d H:i:s', $lastlog['timestamp']).' <span class="alert label">(ca '.$diff.'h ago)</span>';
+		$diff=time()-$lastlog['timestamp'];
+		if($diff<3600) {
+			$diff=round($diff/60);
+			$diff_msg=' <span class="label">ca '.$diff.' min ago</span>';
+		} elseif($diff<86400) {
+			$diff=round($diff/3600);
+			$diff_msg=' <span class="warning label">ca '.$diff.' h ago</span>';
 		} else {
-			$checkedouton=date('Y-m-d H:i:s', $lastlog['timestamp']).' <span class="label">(ca '.$diff.'h ago)</span>';
+			$diff=round($diff/86400);
+			$diff_msg=' <span class="alert label">ca '.$diff.' days ago</span>';
 		}
 		
 		$checked_out_data[]=array(
 			'plate'				=> '<code class="plate">'.$checkedout_plate['plate_id'].'</code>', 
 			'checked_out_by'	=> $lastlog['user'], 
-			'checked_out_on'	=> $checkedouton, 
+			'checked_out_on'	=> date('Y-m-d H:i:s', $lastlog['timestamp']).$diff_msg, 
 			'from'				=> '<code>'.$lastlog['position'].'</code>'
 		);
 	}
@@ -145,59 +136,9 @@ if($checkedout->num_rows>0) {
 	$checkedout_html='';
 }
 
-if($plate) {
+if($plate['name']) {
 	// Plate selected and validated
-	// Show project and sample info 
-	if($plate['type']=="sample") {
-		// This is a project sample plate - fetch project information
-		$sampleplate=parseProjectPlateName($plate['name']);
-		if($project=getProject($sampleplate['limsid'])) {
-			$projecthtml=showProjectData($project);
-		} else {
-			// Looks like project plate but project does not exist in LIMS
-			$projectcard=new zurbCard();
-			$projectcard->divider('<strong>No associated project</strong>');
-			$projectcard->section('This looks like a sample plate for a project. However, the corresponding project can not be found in LIMS so please check that the plate name is correct.');
-			$projecthtml=$projectcard->render();
-		}
-	} else {
-		// Not a project sample plate, don't show any project information
-		$projecthtml='';
-	}
-	
-	// Show plate info
-	$platecard=new zurbCard();
-	$platecard->divider("<strong>Selected plate</strong> <code>".$plate['name']."</code>");
-	$platedata=new htmlList('ul',array('class' => 'no-bullet'));
-	$platedata->listItem('Plate status: '.formatPlateStatus($plate_data['status']));
-	if($plate['limsid']) {
-		// Show plate information from LIMS
-		$clarity=new Clarity("https://genologics.scilifelab.se/api/v2/",$CONFIG['clarity']['user'],$CONFIG['clarity']['pass']);
-		$container=$clarity->getEntity("containers/".$plate['limsid']);
-		$platedata->listItem('LIMS ID: <code>'.$container['limsid'].'</code>');
-		$platedata->listItem('Number of samples: <code>'.$container['occupied-wells'].'</code>');
-	} else {
-		// Plate does not exist in LIMS
-		$platedata->listItem('LIMS ID: <span class="alert label">Plate does not exist in LIMS</span>');
-	}
-	$platecard->section($platedata->render());
-	switch($plate_data['status']) {
-		case 'destroyed':
-			$platecard->section('<strong>This plate has been destroyed and can not be checked in again.</strong>');
-		break;
-
-		case 'returned':
-			$platecard->section('<strong>This plate has been returned to the user and can not be checked in again.</strong><br>If the plate has been modified and returned it has to be imported as a new plate in LIMS.');
-		break;
-	}
-	
-	
-	// Show log
-	$platelog=new htmlTable('Plate log',array('class' => 'log'));
-	$platelog->addData(parseLog($plate_data['log']));
-	$platecard->section($platelog->render());
-
-	$platehtml=$platecard->render();
+	$html=showPlateData($plate);
 	
 	// Hidden form fields with plate and user info
 	$theform->addInput(FALSE,array("type" => "hidden", "name" => "user_email", "value" => $user['user_email']));
@@ -205,19 +146,13 @@ if($plate) {
 	
 	if($plate_data) {
 		// Plate exist in database already
+
 		if($plate_data['status']=="checked_in") {
 			// Plate is checked in, show location info
-			$rack=getRack($plate_data['rack_id'],$plate['name']);
-			$racklayout=new htmlTable('Rack: '.$rack['data']['rack_name'],array('class' => 'rack'));
-			$racklayout->addData(parseRackLayout($rack['layout']));
-			$rackcard=new zurbCard();
-			$rackcard->divider('<strong>Location</strong> '.$rack['storage']['storage_name'].' ('.$rack['storage']['storage_temp'].'&deg;C '.$rack['storage']['storage_type'].' in room '.$rack['storage']['storage_location'].')');
-			$rackcard->section($racklayout->render());
-			$rackcard->section("<p>Plate <code>".$plate_data['plate_id']."</code> located in rack <code>".$rack['data']['rack_name']."</code> @ Col:<code>".$plate_data['col']."</code> Row:<code>".$plate_data['row']."</code></p>");
-			$rackhtml=$rackcard->render();
+			$html.=showRackData($plate_data);
 
 			// Check out plate
-			$theform->addInput("Verify plate ID before proceeding",array("type" => "text", "name" => "plate_verify", "value" => ""));
+			$theform->addInput("Verify plate ID before proceeding",array("type" => "text", "name" => "plate_verify", "value" => "", "autocomplete" => "off"));
 			$theform->addInput(FALSE,array("type" => "submit", "name" => "submit", "value" => "Check out plate", "class" => "button"));
 			$theform->addInput(FALSE,array("type" => "submit", "name" => "return", "value" => "Return plate", "class" => "warning button"));
 			$theform->addInput(FALSE,array("type" => "submit", "name" => "destroy", "value" => "Destroy plate", "class" => "alert button"));
@@ -234,39 +169,32 @@ if($plate) {
 	} else {
 		// Check in of new plate
 		$ALERTS[]=setAlerts("Plate does not exist in plate database");
+		$html.=$plate['search']['html'];
 		// position field controlled by jQuery Regex that trigger AJAX request of conditional position information to #rackview div below
 		$theform->addInput("Position",array("type" => "text", "name" => "position", "value" => "", "id" => "position", "autocomplete" => "off"));
 		$theform->addInput(FALSE,array("type" => "submit", "name" => "submit", "value" => "Check in plate", "class" => "button"));
 		$theform->addInput(FALSE,array("type" => "submit", "name" => "cancel", "value" => "Cancel", "class" => "secondary button"));
 	}
 } else {
-	// Default view:
+	// Default view
 	// No plate selected OR search results showing specific project or list of projects
 	
 	// Operator (user_email) field controlled by jQuery Regex that automatically change focus to next input if valid scilifelab domain email is entered (js/app.js)
 	
-	// Check if this is a search
-	if($search) {
-		if($project) {
-			// Search using project LIMS ID
-			// Show project info
-			$projecthtml=showProjectData($project);
-		} else {
-			// Search using project name
-			// List matching projects
-			$projectcard=new zurbCard();
-			$projectcard->divider(count($search['data']).' projects matching search query: '.$search['query']);
-			$projectcard->section($search['html']);
-			$projecthtml=$projectcard->render();
-		}
-		$theform->addInput("Operator",array("type" => "text", "name" => "user_email", "value" => $user['user_email'], "required" => "", "id" => "user_email", "autocomplete" => "off"));
+	if($plate['search']) {
+		// There are search matches but no plate selected
+		$html=$plate['search']['html'];
+		$theform->addInput("Operator (use your SciLifeLab email address)",array("type" => "text", "name" => "user_email", "value" => $user['user_email'], "required" => "", "id" => "user_email", "autocomplete" => "off"));
+		$theform->addInput("Plate",array("type" => "text", "name" => "plate", "value" => $plate, "id" => "plate", "autocomplete" => "off"));
+		$theform->addInput(FALSE,array("type" => "submit", "name" => "submit", "value" => "Next", "class" => "button"));
+		$theform->addInput(FALSE,array("type" => "submit", "name" => "cancel", "value" => "Cancel", "class" => "secondary button"));
 	} else {
+		// Default view, no search matches and no plate selected
 		$theform->addText('Manage plates by scanning plate barcode or search using plate/project ID or name.');
-		$theform->addInput("Operator (use your scilifelab email address)",array("type" => "text", "name" => "user_email", "value" => "", "required" => "", "id" => "user_email", "autocomplete" => "off"));
+		$theform->addInput("Operator (use your SciLifeLab email address)",array("type" => "text", "name" => "user_email", "value" => "", "required" => "", "id" => "user_email", "autocomplete" => "off"));
+		$theform->addInput("Plate",array("type" => "text", "name" => "plate", "value" => $plate, "required" => "", "id" => "plate", "autocomplete" => "off"));
+		$theform->addInput(FALSE,array("type" => "submit", "name" => "submit", "value" => "Next", "class" => "button"));
 	}
-	
-	$theform->addInput("Plate",array("type" => "text", "name" => "plate", "value" => $plate, "required" => "", "id" => "plate"));
-	$theform->addInput(FALSE,array("type" => "submit", "name" => "submit", "value" => "Next", "class" => "button"));
 }
 
 // Render Page
@@ -296,6 +224,13 @@ if($plate) {
 			<li><a href="storage.php">Manage storage</a></li>
 		</ul>
 	</div>
+
+	<div class="top-bar-right">
+		<ul class="menu" id="server_status">
+			<li><span class="label" id="lims-status">LIMS</span>&nbsp;</li>
+			<li><span class="label" id="couch-status">StatusDB</span>&nbsp;</li>
+		</ul>
+	</div>
 </div>
 
 <?php echo formatAlerts($ALERTS); ?>
@@ -303,13 +238,12 @@ if($plate) {
 <div class="row">
 <br>
 <div class="large-12 columns">
-<?php echo $projecthtml; ?>
-<?php echo $platehtml; ?>
-<?php echo $rackhtml; ?>
+<?php echo $html; ?>
 <?php echo $theform->render(); ?>
 
+<!-- Placeholder for live plate search, populated by _platesearch.php from AJAX request -->
 <!-- Placeholder for plate position info during check in, populated by _rackview.php from AJAX request -->
-<div id="rackview"></div>
+<div id="query_data"></div>
 
 <?php echo $checkedout_html; ?>
 </div>

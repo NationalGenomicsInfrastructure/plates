@@ -1,6 +1,6 @@
 <?php
 // Load configuration
-require_once 'config.php';
+require 'config.php';
 
 //Connect to database
 $DB=new mysqli("p:".$CONFIG['mysql']['server'],$CONFIG['mysql']['user'],$CONFIG['mysql']['pass'],$CONFIG['mysql']['db']);
@@ -9,8 +9,9 @@ if($DB->connect_errno>0){
 }
 
 // Include libraries
-require_once 'class.clarity.v3.php';
-require_once 'class.html.php';
+require 'class.clarity.v3.php';
+require 'class.couch.php';
+require 'class.html.php';
 
 //--------------------------------------------------------------------------------------------------
 // Global functions
@@ -136,7 +137,7 @@ function parseLog($json,$type='plate') {
 	return $data;
 }
 
-// Plate name must be validated using validatePlate first
+// Plate name must be validated using parseQuery first
 function plateAdd($plate,$position,$user_email) {
 	if($position_data=parsePosition($position)) {
 		if($position_data['type']=='position') {
@@ -234,20 +235,46 @@ function plateCheckIn($plate_data,$position,$user_email) {
 	}
 }
 
+// Fetching all plates from database and optionally cache result in a json file
+function getPlates($cache=FALSE) {
+	$plate_query=sql_query("SELECT plate_id FROM plates");
+	if($plate_query->num_rows>0) {
+		while($plate=$plate_query->fetch_assoc()) {
+			$allplates[]=$plate['plate_id'];
+		}
+
+		if($cache) {
+			file_put_contents($cache, json_encode($allplates));
+		}
+		
+		return $allplates;
+	} else {
+		return FALSE;
+	}
+}
+
 function plateFind($query) {
 	global $DB;
 	$query=$DB->real_escape_string($query);
-	$search_query=sql_query("SELECT * FROM plates WHERE plate_id LIKE '$query%'");
+	$search_query=sql_query("SELECT * FROM plates WHERE plate_id LIKE '%$query%'");
+	$results['query']=$query;
 	
+	$card=new zurbCard();
+	$list=new htmlList('ul',array('class' => 'no-bullet'));
+	$card->divider('Registered plates matching: '.$query);
+
 	if($search_query->num_rows>0) {
 		while($plate=$search_query->fetch_assoc()) {
-			$results['data'][$plate['plate_id']]="<code class=\"plate\">".$plate['plate_id']."</code> ".formatPlateStatus($plate['status'])."<br>";
+			$results['data'][$plate['plate_id']]=$plate;
+			$list->listItem('<code class="plate">'.$plate['plate_id'].'</code> '.formatPlateStatus($plate['status']));
 		}
-		$results['html']=implode(" ",$results['data']);
 	} else {
 		$results['data']=FALSE;
-		$results['html']='<p>No plates found</p>';
+		$list->listItem('No plates found');
 	}
+	
+	$card->section($list->render());
+	$results['html']=$card->render();
 	
 	return $results;
 }
@@ -454,23 +481,36 @@ function parseRackLayout($layout,$showplates=TRUE) {
 	return $data;
 }
 
-// Validate name format and check if plate exist in LIMS
-function validatePlate($query) {
+/*
+Parse query string to facilitate matching to different plate naming formats
+Returning FALSE means query is invalid and will not query DB
+Returns array if validated, otherwise FALSE 
+
+	[search] 	= array of search data containing matches to plates or projects
+	[name]		= plate name / FALSE if NOT a plate (e.g. if there are matches to project names or ID's). 
+					- If plate name is not returned page will show plate input field
+					- If plate name is returned page will show position input field
+	[limsid]	= plate LIMS ID
+	[type] 		= plate type
+*/
+
+function parseQuery($query) {
 	// Many different formats.... 
-	// LIMS ID: NN-NNNNNN - if match fetch container name (also check for type [sample|other])
-	// Plate name (project): PNNNNPN - type: [sample], if match fetch container LIMS ID
-	// Plate name (WS): WSYYMMDD, WSYYMMDD-text - type: [other], if match fetch container LIMS ID
-	
-	// Returns array of name,limsid,type if validated, otherwise FALSE
+	// - LIMS container ID: NN-NNNNNN - if match, fetch container name (also check for type [sample|other])
+	// - Plate name (samples for project): PNNNNPN - type: [sample], if match fetch container LIMS ID
+	// - Plate name (workset plate): WSYYMMDD, WSYYMMDD-text - type: [other], if match fetch container LIMS ID
+	// - or any other name as long as it doesn't look like a LIMS container ID or project name
 	
 	global $DB;
+	$query=trim($DB->real_escape_string($query));
 
-	if(preg_match("/(^\d{2}-\d+)/", $query, $matches)) {
+	if($match=validateLIMScontainerID($query)) {
 		// LIMS container ID
-		if($results=checkLIMScontainerID($matches[0])) {
+		if($results=checkLIMScontainerID($match)) {
 			$results['type']=validateLIMScontainerType($results['name']);
 		} else {
 			// Same format as LIMS container ID but does not exist in LIMS...
+			// Do not allow plates that have this name format but not exist in LIMS
 			$results=FALSE;
 		}
 	} else {
@@ -480,10 +520,48 @@ function validatePlate($query) {
 			$results['type']=validateLIMScontainerType($results['name']);
 		} else {
 			// Plate does not exist in LIMS, but it can be a new plate that hasn't been imported yet
-			$name=trim($DB->real_escape_string($query));
-			$results['name']=$name;
-			$results['limsid']=FALSE;
-			$results['type']=validateLIMScontainerType($name);
+			
+			// Also search among possible project names or ID's
+
+			// Check if query matches PNNNN format or J.Doe_17_01 project name format - in this case we want to search for plates
+			if(validateLimsProjectID($query)) {
+				// Query match LIMS project ID
+				if($project=getProject($query)) {
+					// There is a project in LIMS with this project ID, fetch data
+					$results['search']['query']=$query;
+					$results['search']['data']=$project;
+					$results['search']['html']=showProjectData($project);
+					$results['name']=FALSE;
+				} else {
+					// Same format as LIMS project ID but it does not exist in LIMS, not a suitable plate name...
+					$results=FALSE;
+				}
+			} elseif(preg_match("/^[A-Za-z]+\.[A-Za-z]{2,}_?([0-9]{2})?_?([0-9]{2})?/",$query)) {
+				// Query matches LIMS project name format, search StatusDB projects to see if there are any matches
+				// findProjectByName returns an array with [query],[data],[html]
+				$search=findProjectByName($query);
+				if($search['data']) {
+					$results['search']=$search;
+					$results['name']=FALSE;
+				} else {
+					$results['name']=$query;
+					$results['limsid']=FALSE;
+					$results['type']=validateLIMScontainerType($query);
+				}
+			} else {
+				// Query format does not match any known patterns, this is likely a new plate that doesn't exist in LIMS
+				$search=plateFind($query);
+				if(count($search['data'])>1) {
+					$results['search']=$search;
+					$results['name']=$query;
+					$results['limsid']=FALSE;
+					$results['type']=validateLIMScontainerType($query);
+				} else {
+					$results['name']=$query;
+					$results['limsid']=FALSE;
+					$results['type']=validateLIMScontainerType($query);
+				}
+			}
 		}
 	}
 	
@@ -495,11 +573,9 @@ function checkLIMScontainerName($name) {
 	global $CONFIG;
 	$name=trim(filter_var($name,FILTER_SANITIZE_STRING));
 	
-	$clarity=new Clarity("https://genologics.scilifelab.se/api/v2/",$CONFIG['clarity']['user'],$CONFIG['clarity']['pass']);
-	if(!$container=$clarity->getEntity("containers/?name=$name")) {
-		$container=FALSE;
-	}
-
+	$clarity=new Clarity($CONFIG['clarity']['uri'],$CONFIG['clarity']['user'],$CONFIG['clarity']['pass']);
+	$container=$clarity->getEntity("containers/?name=$name");
+	
 	if(is_array($container)) {
 		return array("name" => $name, "limsid" => $container['container']['limsid']);
 	} else {
@@ -511,7 +587,7 @@ function checkLIMScontainerName($name) {
 function checkLIMScontainerID($id) {
 	global $CONFIG;
 	if($id=validateLIMScontainerID($id)) {
-		$clarity=new Clarity("https://genologics.scilifelab.se/api/v2/",$CONFIG['clarity']['user'],$CONFIG['clarity']['pass']);
+		$clarity=new Clarity($CONFIG['clarity']['uri'],$CONFIG['clarity']['user'],$CONFIG['clarity']['pass']);
 		$container=$clarity->getEntity("containers/$id");
 
 		if(is_array($container)) {
@@ -526,17 +602,17 @@ function checkLIMScontainerID($id) {
 
 // Only validate format of LIMS container ID
 function validateLIMScontainerID($id) {
-	return filter_var($id, FILTER_VALIDATE_REGEXP, array("options" => array("regexp" => "/(^\d{2}-\d+)/")));
+	return filter_var($id, FILTER_VALIDATE_REGEXP, array("options" => array("regexp" => "/^\d{2}-\d+$/")));
 }
 
 // Only validate format of LIMS project ID
 function validateLimsProjectID($lims_id) {
-	return filter_var($lims_id, FILTER_VALIDATE_REGEXP, array("options" => array("regexp" => "/^P[0-9]{3,}/")));
+	return filter_var($lims_id, FILTER_VALIDATE_REGEXP, array("options" => array("regexp" => "/^P[0-9]{1,}$/")));
 }
 
 // Only validate format of LIMS project name
 function validateLimsProjectName($lims_name) {
-	return filter_var($lims_name, FILTER_VALIDATE_REGEXP, array("options" => array("regexp" => "/^[A-Z]+\.[A-Za-z]{2,}_[0-9]{2}_[0-9]{2}/")));
+	return filter_var($lims_name, FILTER_VALIDATE_REGEXP, array("options" => array("regexp" => "/^[A-Z]+\.[A-Za-z]{2,}_[0-9]{2}_[0-9]{2}$/")));
 }
 
 // Determine wheter name is of sample plate format or other name
@@ -548,7 +624,7 @@ function validateLIMScontainerType($name) {
 	}
 }
 
-// Get LIMS ID from Plate ID
+// Get project LIMS ID from Plate ID
 function parseProjectPlateName($plate_name) {
 	if(preg_match("/(^P\d+)(P[1-9])/",$plate_name,$matches)) {
 		return array("limsid" => $matches[1], "plate_number" => $matches[2]);
@@ -564,45 +640,143 @@ function findProjectByName($query) {
 		return (stripos($item,$query) !== FALSE);
 	});
 	
+	$card=new zurbCard();
+	$card->divider(count($search_results).' projects matching search query: '.$query);
+	$list=new htmlList('ul',array('class' => 'no-bullet'));
+
 	$results['query']=$query;	
-	$results['html']="<ul class=\"no-bullet\">";
 	if(count($search_results)>0) {
 		$results['data']=$search_results;
 		foreach($search_results as $lims_id => $project_name) {
-			$results['html'].="<li><code class=\"plate\">$lims_id</code> $project_name (".$projects_all[$lims_id]['project_name_user'].")</li>";
+			$list->listItem("<code class=\"plate\">$lims_id</code> $project_name (".$projects_all[$lims_id]['project_name_user'].")");
 		}
 	} else {
 		$results['data']=FALSE;
-		$results['html']="<li>No results matching query</li>";
+		$list->listItem("No results matching query");
 	}
-	$results['html'].="</ul>";
+	$card->section($list->render());
+	$results['html']=$card->render();
 	
 	return $results;
 }
 
-function showProjectData($project) {
-	$platesearch=plateFind($project['limsid']);
-	$libprepdata=parseLibprep($project['udf']['Library construction method']);
+// Show plate info
+function showPlateData($plate) {
+	global $CONFIG;
+	$plate_data=sql_fetch("SELECT * FROM plates WHERE plate_id='".$plate['name']."' LIMIT 1");
 
-	$projectcard=new zurbCard();
-	$projectdata=new htmlList('ul',array('class' => 'no-bullet'));
-	$projectdata->listItem('Input material: '.$libprepdata['input']);
-	$projectdata->listItem('Library prep: '.$libprepdata['type']);
-	$projectcard->divider('<strong>Selected project</strong> '.$project['limsid'].', '.$project['name'].' ('.$project['udf']['Customer project reference'].")");
-	$projectcard->section($projectdata->render());
-	$projectcard->divider('Registered plates matching: '.$project['limsid']);
-	$projectcard->section($platesearch['html']);
+	if($plate['type']=="sample") {
+		// This is a project sample plate - fetch project information
+		$sampleplate=parseProjectPlateName($plate['name']);
+		$project=getProject($sampleplate['limsid']);
+		$html=showProjectData($project);
+	}
+
+	$card=new zurbCard();
+	$card->divider("<strong>Selected plate</strong> <code>".$plate['name']."</code>");
+	$list=new htmlList('ul',array('class' => 'no-bullet'));
+	$list->listItem('Plate status: '.formatPlateStatus($plate_data['status']));
+	if($plate['limsid']) {
+		// Show plate information from LIMS
+		$clarity=new Clarity($CONFIG['clarity']['uri'],$CONFIG['clarity']['user'],$CONFIG['clarity']['pass']);
+		$container=$clarity->getEntity("containers/".$plate['limsid']);
+		$list->listItem('LIMS ID: <code>'.$container['limsid'].'</code>');
+		$list->listItem('Number of samples: <code>'.$container['occupied-wells'].'</code>');
+	} else {
+		// Plate does not exist in LIMS
+		$list->listItem('LIMS ID: <span class="alert label">Plate does not exist in LIMS</span>');
+	}
+	$card->section($list->render());
+	switch($plate_data['status']) {
+		case 'destroyed':
+			$card->section('<strong>This plate has been destroyed and can not be checked in again.</strong>');
+		break;
+
+		case 'returned':
+			$card->section('<strong>This plate has been returned to the user and can not be checked in again.</strong><br>If the plate has been modified and returned it has to be imported as a new plate in LIMS.');
+		break;
+	}
 	
-	return $projectcard->render();
+	// Show log
+	$log=new htmlTable('Plate log',array('class' => 'log'));
+	$log->addData(parseLog($plate_data['log']));
+	$card->section($log->render());
+	$html.=$card->render();
+
+	return $html;
+}
+
+// Show project info
+function showProjectData($project) {
+	$card=new zurbCard();
+
+	if($project) {
+		// Add trailing 'P' to avoid matching e.g. query 'P1' with plates 'P123P1', 'P1234P1' etc (this is sent to MySQL LIKE query)
+		$platesearch=plateFind($project['limsid'].'P'); 
+		$libprepdata=parseLibprep($project['udf']['Library construction method']);
+		$status=getProjectStatus($project);
+	
+		$list=new htmlList('ul',array('class' => 'no-bullet'));
+		$list->listItem('Project status: '.$status['html']);
+		$list->listItem('Input material: '.$libprepdata['input']);
+		$list->listItem('Library prep: '.$libprepdata['type']);
+		
+		$card->divider('<strong>Selected project</strong> '.$project['limsid'].', '.$project['name'].' ('.$project['udf']['Customer project reference'].")");
+		$card->section($list->render());
+		//$card->divider('Registered plates matching: '.$project['limsid']);
+		//$card->section($platesearch['html']);
+	} else {
+		$card->divider('<strong>No associated project</strong>');
+		$card->section('This looks like a sample plate for a project. However, the corresponding project can not be found in LIMS so please check that the plate name is correct.');
+	}
+	
+	return $card->render().$platesearch['html'];
+}
+
+// Show rack info
+function showRackData($plate_data) {
+	$rack=getRack($plate_data['rack_id'],$plate_data['plate_id'],$plate_data['col'],$plate_data['row']);
+	$racklayout=new htmlTable('Rack: '.$rack['data']['rack_name'],array('class' => 'rack'));
+	$racklayout->addData(parseRackLayout($rack['layout']));
+	
+	$card=new zurbCard();
+	$card->divider('<strong>Location</strong> '.$rack['storage']['storage_name'].' ('.$rack['storage']['storage_temp'].'&deg;C '.$rack['storage']['storage_type'].' in room '.$rack['storage']['storage_location'].')');
+	$card->section($racklayout->render());
+	$card->section("<p>Plate <code>".$plate_data['plate_id']."</code> located in rack <code>".$rack['data']['rack_name']."</code> @ Col:<code>".$plate_data['col']."</code> Row:<code>".$plate_data['row']."</code></p>");
+	return $card->render();
+}
+
+// Evaluate project status based on dates from LIMS
+function getProjectStatus($project) {
+	if(isset($project['open-date'])) {
+		if(isset($project['udf']['Queued'])) {
+			if(isset($project['close-date'])) {
+				if(isset($project['udf']['Aborted'])) {
+					$status='aborted';
+				} else {
+					$status='closed';
+				}
+			} else {
+				$status='ongoing';
+			}
+		} else {
+			$status='reception_control';
+		}
+	} else {
+		$status='pending';
+	}
+	
+	return array(
+		'status'	=> $status, 
+		'html'		=> "<span class=\"label $status\">".ucfirst(str_replace('_',' ',$status)).'</span>'
+	);
 }
 
 // Fetch all projects from StatusDB
 function getProjects() {
 	global $CONFIG;
-	$auth=$CONFIG['couch']['user'].":".$CONFIG['couch']['pass'];
-	$url="http://$auth@tools.scilifelab.se:5984/projects/_design/project/_view/summary?reduce=false";
-	$data=file_get_contents($url);
-    $json=json_decode($data);
+	$couch=new Couch($CONFIG['couch']['host'],$CONFIG['couch']['port'],$CONFIG['couch']['user'],$CONFIG['couch']['pass']);
+	$json=$couch->getView($CONFIG['couch']['views']['projects']);
 
     foreach($json->rows as $object) {
 	    $projectdata=array(
@@ -646,7 +820,7 @@ function getProjects() {
 function getProject($lims_id) {
 	global $ALERTS,$CONFIG;
 	if($lims_id=validateLimsProjectID($lims_id)) {
-		$clarity=new Clarity("https://genologics.scilifelab.se/api/v2/",$CONFIG['clarity']['user'],$CONFIG['clarity']['pass']);
+		$clarity=new Clarity($CONFIG['clarity']['uri'],$CONFIG['clarity']['user'],$CONFIG['clarity']['pass']);
 		if($project=$clarity->getEntity("projects/$lims_id")) {
 			return $project;
 		} else {
@@ -682,10 +856,8 @@ function parseLibprep($prep) {
 // Get all users from StatusDB
 function getUsers($user=FALSE) {
 	global $CONFIG;
-	$auth=$CONFIG['couch']['user'].":".$CONFIG['couch']['pass'];
-	$url="http://$auth@tools.scilifelab.se:5984/gs_users/_design/authorized/_view/users?reduce=false";
-	$data=file_get_contents($url);
-    $json=json_decode($data);
+	$couch=new Couch($CONFIG['couch']['host'],$CONFIG['couch']['port'],$CONFIG['couch']['user'],$CONFIG['couch']['pass']);
+	$json=$couch->getView($CONFIG['couch']['views']['users']);
 
     foreach($json->rows as $object) {
 	    $users[$object->key]=$object->value;

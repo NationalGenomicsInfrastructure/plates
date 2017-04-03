@@ -36,16 +36,23 @@ The necessary credentials for connecting to database, LIMS and StatusDB is added
 		'mysql' => array(
 			'user' 		=> '', 
 			'pass' 		=> '', 
-			'db'		=> '',
+			'db' 		=> '',
 			'server'	=> ''
 		), 
 		'clarity' => array(
 			'user' 		=> '', 
-			'pass' 		=> ''
+			'pass' 		=> '', 
+			'uri'		=> ''
 		), 
 		'couch' => array(
 			'user' 		=> '', 
-			'pass' 		=> ''
+			'pass' 		=> '', 
+			'host'		=> '', 
+			'port'		=> , 
+			'views'		=> array(
+				'users'		=> '', 
+				'projects'	=> ''
+			)
 		)
 	);
 	?>
